@@ -21,6 +21,10 @@ tournament_settings = {
             "class": "agents.template_agent.template_agent.TemplateAgent",
             "parameters": {"storage_dir": "agent_storage/TemplateAgent"},
         },
+        {   # Add our agent to the list
+            "class": "agents.group_30_agent.group_30_agent.Group30Agent",
+            "parameters": {"storage_dir": "agent_storage/Group30Agent"},
+        },
         {
             "class": "agents.boulware_agent.boulware_agent.BoulwareAgent",
         },
