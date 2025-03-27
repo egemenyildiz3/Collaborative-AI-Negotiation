@@ -99,7 +99,7 @@ class Group30Agent(DefaultParty):
         self.getConnection().send(action)
 
     def getDescription(self) -> str:
-        return "Improved Group30 agent with dynamic bidding and opponent modeling"
+        return "Group30Agent"
 
     def opponent_action(self, action):
         if isinstance(action, Offer):
