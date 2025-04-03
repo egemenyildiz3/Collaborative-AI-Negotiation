@@ -52,7 +52,7 @@ class Group30Agent(DefaultParty):
         self.silent_move_delta = 0.01
         self.concession_move_delta = 0.03  # moderate concession threshold
         self.large_concession_delta = 0.06   # large concession threshold
-        self.selfish_move_delta = 0.01       # threshold for a selfish move
+        self.selfish_move_delta = 0.02       # threshold for a selfish move
 
         # Opponent modeling and bid storage
         self.opponent_model: OpponentModel = None
@@ -68,8 +68,8 @@ class Group30Agent(DefaultParty):
         self.recognition_h_bid_history = []  # our bids during the recognition phase
         self.recognition_o_bid_history = []  # opponent bids during the recognition phase
         self.opponent_hypothesis = None        # e.g. {"HH", "R"} or {"CC", "R", "TT"}
+        self.opponent_recognized_strategy_array = []
         self.recognized_strategy = None        # final decision: "HH", "CC", "TT", or "R"
-
         self.logger.log(logging.INFO, "Group30Agent initialized")
 
     def notifyChange(self, data: Inform):
@@ -163,7 +163,6 @@ class Group30Agent(DefaultParty):
         else:
             self.last_offered_bid = candidate
             self.send_action(Offer(self.me, candidate))
-
     def save_data(self):
         with open(f"{self.storage_dir}/data.md", "w") as f:
             f.write("Learning data placeholder")
@@ -175,8 +174,8 @@ class Group30Agent(DefaultParty):
         progress = self.progress.get(time.time() * 1000)
 
         # Accept if opponent's offer is better than our next bid
-        if self.score_bid(bid) > self.score_bid(next_bid):
-            return True
+        # if self.score_bid(bid) > self.score_bid(next_bid):
+        #     return True
 
         # Accept near deadline if it's a decent offer
         if self.profile.getUtility(bid) > 0.75 and progress > 0.95:
@@ -285,8 +284,7 @@ class Group30Agent(DefaultParty):
                 candidates = [self.all_bids.get(randint(0, self.all_bids.size() - 1))]
             chosen = max(candidates, key=self.score_bid)
             return chosen
-
-        elif current_round == 4:
+        else:
             # Round 4: Choose a silent move.
             candidates = [bid for bid in self.all_bids
                           if self.classify_self_move(self.recognition_h_bid_history[-1], bid) == "silent"]
@@ -311,7 +309,7 @@ class Group30Agent(DefaultParty):
             self.logger.log(logging.INFO, "Recognition: Opponent move is " + move_type_opp)
             self.logger.log(logging.INFO, "Recognition: Opponent sigma is " + str(sigma_opp))
             self.logger.log(logging.INFO, "Recognition: Self sigma is " + str(sigma_self))
-            if sigma_opp <= abs(sigma_self) and move_type_opp in {"silent", "concession","small_concession","selfish"}:
+            if abs(sigma_opp) <= abs(sigma_self) and move_type_opp in {"silent", "concession","small_concession","selfish"}:
                 self.opponent_hypothesis = {"HH", "R"}
                 self.logger.log(logging.INFO, "Recognition: Hypothesis updated to {HH, R}.")
             elif sigma_opp >= sigma_self:
@@ -350,7 +348,7 @@ class Group30Agent(DefaultParty):
           - "large_concession" if utility decreases significantly.
           - "selfish" if utility increases beyond the threshold.
         """
-        diff = self.score_bid(new_bid) - self.score_bid(old_bid)
+        diff = self.score_bid(new_bid) - self.score_bid(old_bid) # move step
         if abs(diff) <= self.silent_move_delta:
             return "silent"
         if diff < 0:
@@ -376,14 +374,18 @@ class Group30Agent(DefaultParty):
           - Selfish move (for opponent) if σ_H(μ) < -δ.
         For small differences beyond δ, we return "small_concession" or "small_selfish" accordingly.
         """
+        dff  = self.score_bid(new_bid) - self.score_bid(old_bid)  # this is the perception
         diff = self.opponent_model.get_predicted_utility(new_bid) - self.opponent_model.get_predicted_utility(old_bid)
         self.logger.log(logging.INFO, str(self.opponent_model.get_predicted_utility(new_bid)) + " " + str(self.opponent_model.get_predicted_utility(old_bid)) + " " + str(diff))
-        if abs(diff) <= self.silent_move_delta:
-            return "silent"
-        elif diff > self.concession_move_delta:
+        if abs(dff) <= self.silent_move_delta:
+            if diff > self.selfish_move_delta:
+                return "selfish"
+            else:
+                return "silent"
+        elif abs(dff) > self.concession_move_delta:
             # A sufficiently positive diff: opponent's bid is better for us → concession.
             return "concession"
-        elif diff < -self.selfish_move_delta:
+        elif diff > self.selfish_move_delta: # opponents side
             # A sufficiently negative diff: opponent's bid is worse for us → selfish move.
             return "selfish"
         else:
@@ -404,9 +406,9 @@ class Group30Agent(DefaultParty):
         if len(self.recognition_o_bid_history) < 3:
             self.logger.log(logging.INFO, "Final Analysis: Not enough opponent data for analysis.")
             return
-        move_type = self.classify_opponent_move(self.recognition_o_bid_history[1], self.recognition_o_bid_history[2])
-        self.logger.log(logging.INFO, str(self.recognized_strategy))
-
+        move_type = self.classify_opponent_move(self.recognition_o_bid_history[2], self.recognition_o_bid_history[3])
+        self.logger.log(logging.INFO, "Recognized Strategy " + str(self.recognized_strategy))
+        self.logger.log(logging.INFO,"Recognized Opponent Move type " + str(move_type))
         if self.recognized_strategy:
             self.logger.log(logging.INFO, "Final Analysis: Concluded opponent plays " + str(self.recognized_strategy) + ".")
             return
@@ -427,3 +429,6 @@ class Group30Agent(DefaultParty):
         else:
             self.logger.log(logging.INFO, "Final Analysis: No clear hypothesis; defaulting to Random (R).")
             self.recognized_strategy = "R"
+
+        self.opponent_recognized_strategy_array.append(self.recognized_strategy)
+        self.logger.log(logging.INFO,"OPPONENT RECOGNIZED STRATEGY " + str(self.opponent_recognized_strategy_array))
