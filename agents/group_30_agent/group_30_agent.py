@@ -168,49 +168,104 @@ class Group30Agent(DefaultParty):
         with open(f"{self.storage_dir}/data.md", "w") as f:
             f.write("Learning data placeholder")
 
-    def accept_condition(self, bid: Bid, next_bid: Bid) -> bool:
-        if bid is None:
-            return False
+    def _nash_product(self, bid: Bid) -> float:
+        """Compute the Nash product for a bid as the product of our utility and the predicted opponent utility."""
+        my_util = float(self.profile.getUtility(bid))
+        opp_util = float(self.opponent_model.get_predicted_utility(bid))
+        return my_util * opp_util
 
-        progress = self.progress.get(time.time() * 1000)
+    def _dominates(self, bid1: Bid, bid2: Bid) -> bool:
+        """
+        Returns True if bid1 dominates bid2,
+        meaning bid1 is at least as good in both utilities and strictly better in one.
+        """
+        u1, u2 = float(self.profile.getUtility(bid1)), float(self.profile.getUtility(bid2))
+        o1, o2 = float(self.opponent_model.get_predicted_utility(bid1)), float(self.opponent_model.get_predicted_utility(bid2))
+        return (u1 >= u2 and o1 >= o2) and (u1 > u2 or o1 > o2)
 
-        # Accept if opponent's offer is better than our next bid
-        if self.score_bid(bid) > self.score_bid(next_bid):
-            return True
+    def _pareto_filter(self, bids: list) -> list:
+        """
+        Filter the given list of bids to retain only those on the Pareto frontier
+        with respect to our utility and the predicted opponent utility.
+        """
+        pareto_bids = []
+        for bid in bids:
+            dominated = False
+            for other in bids:
+                if other == bid:
+                    continue
+                if self._dominates(other, bid):
+                    dominated = True
+                    break
+            if not dominated:
+                pareto_bids.append(bid)
+        return pareto_bids
 
-        # Accept near deadline if it's a decent offer
-        if self.profile.getUtility(bid) > 0.75 and progress > 0.95:
-            return True
-
-        # Accept fallback if opponent is stubborn near deadline
-        if progress > 0.98 and self.opponent_stubborn and self.profile.getUtility(bid) > self.social_welfare_value:
-            return True
-
-        if self.profile.getUtility(bid) > 0.90:
-            return True
-
-        return False
+    def _congestion_score(self, bid: Bid, bids: list) -> float:
+        """
+        Compute a congestion score for a bid based on how many bids in the candidate set
+        have similar utility values (both ours and the opponent's).
+        """
+        delta = 0.02  # threshold for similarity in utility values
+        my_val = float(self.profile.getUtility(bid))
+        opp_val = float(self.opponent_model.get_predicted_utility(bid))
+        count = 0
+        for b in bids:
+            if abs(float(self.profile.getUtility(b)) - my_val) < delta and \
+            abs(float(self.opponent_model.get_predicted_utility(b)) - opp_val) < delta:
+                count += 1
+        return count
 
     def find_bid(self) -> Bid:
-        bids = [self.all_bids.get(randint(0, self.all_bids.size() - 1)) for _ in range(5000)]
+        """
+        Modified bid selection. If the recognized strategy is non-random,
+        we use a bid-finding logic based on Pareto optimality, Nash product, and bid congestion.
+        Otherwise, we fall back to the original method.
+        """
         progress = self.progress.get(time.time() * 1000)
-        best_bid = None
-        best_score = -1.0
+        # Sample a set of candidate bids (e.g., 5000 random bids)
+        candidates = [self.all_bids.get(randint(0, self.all_bids.size() - 1)) for _ in range(5000)]
+        
+        # If a strategic (non-random) opponent is recognized, use the new logic.
+        if self.recognized_strategy is not None and self.recognized_strategy != "R":
+            # Step 1: Identify Pareto optimal bids among candidates.
+            pareto_candidates = self._pareto_filter(candidates)
+            if not pareto_candidates:
+                pareto_candidates = candidates  # fallback if filter returns empty
+            
+            # Step 2: For each Pareto candidate, compute its Nash product and congestion score.
+            # First, compute congestion scores over the whole candidate set.
+            congestion_scores = {bid: self._congestion_score(bid, candidates) for bid in pareto_candidates}
+            max_congestion = max(congestion_scores.values()) if congestion_scores else 1.0
+            
+            # Weighting parameter: adjust alpha to tune the importance of Nash vs congestion.
+            alpha = 0.7  
+            best_bid = None
+            best_score = -1.0
+            for bid in pareto_candidates:
+                nash = self._nash_product(bid)
+                congestion_norm = congestion_scores[bid] / max_congestion  # normalize congestion score
+                combined_score = alpha * nash + (1 - alpha) * congestion_norm
+                if combined_score > best_score:
+                    best_score = combined_score
+                    best_bid = bid
+            return best_bid if best_bid is not None else self.last_offered_bid
 
+        # Else, use the original logic (for random opponent or if strategy is unclear).
         if progress < 0.3:
             if self.last_offered_bid is None:
                 target = Decimal(0.75)
-                bids.sort(key=lambda b: abs(self.profile.getUtility(b) - target))
-                best_bid = bids[0]
+                candidates.sort(key=lambda b: abs(self.profile.getUtility(b) - target))
+                return candidates[0]
             else:
-                bids.sort(key=lambda b: self.profile.getUtility(b))
+                candidates.sort(key=lambda b: self.profile.getUtility(b))
                 threshold = self.profile.getUtility(self.last_offered_bid)
-                filtered = [b for b in bids if self.profile.getUtility(b) >= threshold]
-                best_bid = max(filtered, key=self.score_bid) if filtered else self.last_offered_bid
+                filtered = [b for b in candidates if self.profile.getUtility(b) >= threshold]
+                return max(filtered, key=self.score_bid) if filtered else self.last_offered_bid
         elif progress < 0.98:
-            bids = [b for b in bids if self.profile.getUtility(b) >= self.profile.getUtility(self.last_offered_bid) * Decimal(0.9)]
-            bids.sort(key=lambda b: -self.opponent_model.get_predicted_utility(b))
-            best_bid = bids[0] if bids else self.last_offered_bid
+            candidates = [b for b in candidates if self.profile.getUtility(b) >= self.profile.getUtility(self.last_offered_bid) * Decimal(0.9)]
+            candidates.sort(key=lambda b: -self.opponent_model.get_predicted_utility(b))
+            return candidates[0] if candidates else self.last_offered_bid
         else:
             avg_opp_util = sum(Decimal(self.opponent_model.get_predicted_utility(b)) for b in self.received_bids) / len(self.received_bids)
             avg_my_util = sum(self.profile.getUtility(b) for b in self.received_bids) / len(self.received_bids)
@@ -220,7 +275,45 @@ class Group30Agent(DefaultParty):
             else:
                 return self.last_offered_bid
 
-        return best_bid
+    def accept_condition(self, bid: Bid, next_bid: Bid) -> bool:
+        """
+        Modified acceptance condition. For a non-random opponent,
+        we compare the Nash product (a proxy for fairness) of the opponent’s offer with that of our planned bid.
+        """
+        if bid is None:
+            return False
+
+        progress = self.progress.get(time.time() * 1000)
+        
+        # If a strategic (non-random) opponent is recognized, use the Nash product evaluation.
+        if self.recognized_strategy is not None and self.recognized_strategy != "R":
+            opp_nash = self._nash_product(bid)
+            candidate_nash = self._nash_product(next_bid)
+            # Accept if the opponent’s offer yields a Nash product as good as (or better than) our candidate bid.
+            if opp_nash >= candidate_nash:
+                return True
+            # Also accept if the bid is very high on our scale.
+            if self.profile.getUtility(bid) > 0.90:
+                return True
+            # Near deadline, accept a decent offer.
+            if self.profile.getUtility(bid) > 0.75 and progress > 0.95:
+                return True
+            # Fallback for stubborn opponents.
+            if progress > 0.98 and self.opponent_stubborn and self.profile.getUtility(bid) > self.social_welfare_value:
+                return True
+            return False
+
+        # Otherwise, use the original acceptance condition (for random or unclassified opponents).
+        if self.score_bid(bid) > self.score_bid(next_bid):
+            return True
+        if self.profile.getUtility(bid) > 0.75 and progress > 0.95:
+            return True
+        if progress > 0.98 and self.opponent_stubborn and self.profile.getUtility(bid) > self.social_welfare_value:
+            return True
+        if self.profile.getUtility(bid) > 0.90:
+            return True
+
+        return False
 
     def score_bid(self, bid: Bid, alpha: float = 0.9, eps: float = 0.1) -> float:
         progress = self.progress.get(time.time() * 1000)
