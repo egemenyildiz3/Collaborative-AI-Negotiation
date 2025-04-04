@@ -262,12 +262,12 @@ class Agent3(DefaultParty):
         if self._progress.get(time.time() * 1000) >= 0.99 and self._best_bid_utility >= self._reservation_utility:
             return self._best_received_bid
 
-        # If it is time to run the welfare calculation the order of bids will change.
-        # As we learn more about the opponent's bids, we can model their behaviour better.
-        if self._run_welfare_calculation() and self._big_concessions_index >= 20:
-            self._rerank_bids()
-            self._big_concessions_index = 0
-            self._last_index = 0
+        # # If it is time to run the welfare calculation the order of bids will change.
+        # # As we learn more about the opponent's bids, we can model their behaviour better.
+        # if self._run_welfare_calculation() and self._big_concessions_index >= 20:
+        #     self._rerank_bids()
+        #     self._big_concessions_index = 0
+        #     self._last_index = 0
 
         # Choose the next bid from our list of available bids
         num_bids = len(self._possible_bids)

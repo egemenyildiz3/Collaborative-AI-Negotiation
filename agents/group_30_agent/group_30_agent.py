@@ -3,6 +3,7 @@ import time
 from random import randint, choice
 from math import floor
 import copy
+import random
 from decimal import Decimal
 
 from geniusweb.actions.Accept import Accept
@@ -49,10 +50,10 @@ class Group30Agent(DefaultParty):
 
         # Variables for move size and thresholds (delta values)
         self.move_size = 0.0  # difference in utility between sequential bids
-        self.silent_move_delta = 0.01
+        self.silent_move_delta = 0.002
         self.concession_move_delta = 0.03  # moderate concession threshold
-        self.large_concession_delta = 0.06   # large concession threshold
-        self.selfish_move_delta = 0.02       # threshold for a selfish move
+        self.large_concession_delta = 0.06  # large concession threshold
+        self.selfish_move_delta = 0.01  # threshold for a selfish move
 
         # Opponent modeling and bid storage
         self.opponent_model: OpponentModel = None
@@ -67,10 +68,19 @@ class Group30Agent(DefaultParty):
         # New attributes for strategy recognition (used only after round 30)
         self.recognition_h_bid_history = []  # our bids during the recognition phase
         self.recognition_o_bid_history = []  # opponent bids during the recognition phase
-        self.opponent_hypothesis = None        # e.g. {"HH", "R"} or {"CC", "R", "TT"}
-        self.opponent_recognized_strategy_array = []
-        self.recognized_strategy = None        # final decision: "HH", "CC", "TT", or "R"
+        self.opponent_hypothesis = None  # e.g. {"HH", "R"} or {"CC", "R", "TT"}
+        self.recognized_strategy = None  # final decision: "HH", "CC", "TT", or "R"
+
         self.logger.log(logging.INFO, "Group30Agent initialized")
+
+        self._best_bid_utility = 0.0
+
+        self._best_received_bid = None
+        self.best_candidate_space = []
+        self.best_candidate_space_init = False
+        self.best_candidate_space_second = False
+        self.best_candidate_space_third = False
+        self.best_candidate_space_final = False
 
     def notifyChange(self, data: Inform):
         if isinstance(data, Settings):
@@ -89,6 +99,8 @@ class Group30Agent(DefaultParty):
             # Pre-load all bids once to reduce future overhead
             self.all_bids = AllBidsList(self.domain)
 
+
+
         elif isinstance(data, ActionDone):
             action = data.getAction()
             actor = action.getActor()
@@ -106,6 +118,106 @@ class Group30Agent(DefaultParty):
 
         else:
             self.logger.log(logging.WARNING, "Unknown Inform received: " + str(data))
+    def _nash_product(self, bid: Bid) -> float:
+        """Compute the Nash product for a bid as the product of our utility and the predicted opponent utility."""
+        my_util = float(self.profile.getUtility(bid))
+        opp_util = float(self.opponent_model.get_predicted_utility(bid))
+        return my_util * opp_util
+
+    def _dominates(self, bid1: Bid, bid2: Bid) -> bool:
+        """
+        Returns True if bid1 dominates bid2,
+        meaning bid1 is at least as good in both utilities and strictly better in one.
+        """
+        u1, u2 = float(self.profile.getUtility(bid1)), float(self.profile.getUtility(bid2))
+        o1, o2 = float(self.opponent_model.get_predicted_utility(bid1)), float(self.opponent_model.get_predicted_utility(bid2))
+        return (u1 >= u2 and o1 >= o2) and (u1 > u2 or o1 > o2)
+
+    def _pareto_filter(self, bids: list) -> list:
+        """
+        Filter the given list of bids to retain only those on the Pareto frontier
+        with respect to our utility and the predicted opponent utility.
+        """
+        pareto_bids = []
+        for bid in bids:
+            dominated = False
+            for other in bids:
+                if other == bid:
+                    continue
+                if self._dominates(other, bid):
+                    dominated = True
+                    break
+            if not dominated:
+                pareto_bids.append(bid)
+        return pareto_bids
+
+    def _congestion_score(self, bid: Bid, bids: list) -> float:
+        """
+        Compute a congestion score for a bid based on how many bids in the candidate set
+        have similar utility values (both ours and the opponent's).
+        """
+        delta = 0.02  # threshold for similarity in utility values
+        my_val = float(self.profile.getUtility(bid))
+        opp_val = float(self.opponent_model.get_predicted_utility(bid))
+        count = 0
+        for b in bids:
+            if abs(float(self.profile.getUtility(b)) - my_val) < delta and \
+            abs(float(self.opponent_model.get_predicted_utility(b)) - opp_val) < delta:
+                count += 1
+        return count
+    def initialize_bid_space(self):
+        num_samples = 5000
+        sample_bids = [self.all_bids.get(randint(0, self.all_bids.size() - 1)) for _ in range(num_samples)]
+
+        # Sort candidates by own utility
+        sample_bids.sort(key=lambda b: self.profile.getUtility(b), reverse=True)
+
+        # Take the top 300 bids to reduce noise
+        top_candidates = sample_bids[:300]
+
+        # If a strategic opponent is detected, apply Pareto filtering and advanced scoring
+        if self.recognized_strategy is not None and self.recognized_strategy != "R" and len(self.received_bids) > 100:
+            # Step 1: Pareto filtering
+            pareto_bids = self._pareto_filter(top_candidates)
+            if len(pareto_bids) < 150:
+                l = len(pareto_bids)
+                a = 150 - l
+                pareto_bids = pareto_bids + top_candidates[:a]
+            print("LEN " + str(len(pareto_bids)))
+            if not pareto_bids:
+                pareto_bids = top_candidates  # fallback if Pareto filter returns nothing
+
+            # Step 2: Compute congestion scores
+            congestion_scores = {bid: self._congestion_score(bid, sample_bids) for bid in pareto_bids}
+            max_congestion = max(congestion_scores.values(), default=1.0)
+
+            # Step 3: Score bids using weighted Nash + congestion score
+            alpha = 0.7
+            scored_bids = []
+            for bid in pareto_bids:
+                nash = self._nash_product(bid)
+                congestion_norm = congestion_scores[bid] / max_congestion
+                combined_score = alpha * nash + (1 - alpha) * congestion_norm
+                scored_bids.append((combined_score, bid))
+
+            # Step 4: Sort and select top N bids
+            # last_scored_bids = []
+            # for bid1 in scored_bids:
+            #     b2 = self.calculate_welfare(bid1)
+            #     last_scored_bids.append(b2)
+
+            scored_bids.sort(reverse=True, key=lambda x: x[0])
+            self.best_candidate_space = [bid for _, bid in scored_bids[:150]]
+
+        else:
+            # If the opponent is random or unrecognized, just use top utility bids
+            self.best_candidate_space = top_candidates[:150]
+
+        print("SCORED BIDS")
+        print(len(self.best_candidate_space))
+
+
+
 
     def getCapabilities(self) -> Capabilities:
         return Capabilities(set(["SAOP"]), set(["geniusweb.profile.utilityspace.LinearAdditive"]))
@@ -115,6 +227,12 @@ class Group30Agent(DefaultParty):
 
     def getDescription(self) -> str:
         return "Group30Agent"
+
+    def calculate_welfare(self, bid) -> float:
+        own_utility = self.profile.getUtility(bid)
+        opponent_utility = self.opponent_model.get_predicted_utility(bid)
+        return (0.9) * (own_utility) \
+                + (0.1) * (opponent_utility)
 
     def opponent_action(self, action):
         if isinstance(action, Offer):
@@ -152,17 +270,31 @@ class Group30Agent(DefaultParty):
                 self.update_strategy_recognition()
 
     def my_turn(self):
-        # Use strategy recognition moves only during rounds 30-33.
-        if 10 <= len(self.received_bids) <= 13:
-            candidate = self.strategy_recognition_move()
-            self.recognition_h_bid_history.append(candidate)
-        else:
-            candidate = self.find_bid()
+        if not self.best_candidate_space_init:
+            self.best_candidate_space_init = True
+            print("HEREE")
+            self.initialize_bid_space()
+        # if 10 <= len(self.received_bids) <= 13:
+        #     candidate = self.strategy_recognition_move()
+        #     self.recognition_h_bid_history.append(candidate)
+        # else:
+        candidate = self.find_bid()
+        if len(self.received_bids) == 300:
+            self.best_candidate_space_final = True
+            print("SECOND TIME")
+            self.initialize_bid_space()
+        if len(self.received_bids) == 600:
+            print("THIRD TIME")
+            self.initialize_bid_space()
+        if len(self.received_bids) == 900:
+            print("FOURTH TIME")
+            self.initialize_bid_space()
         if self.accept_condition(self.last_received_bid, candidate):
             self.send_action(Accept(self.me, self.last_received_bid))
         else:
             self.last_offered_bid = candidate
             self.send_action(Offer(self.me, candidate))
+
     def save_data(self):
         with open(f"{self.storage_dir}/data.md", "w") as f:
             f.write("Learning data placeholder")
@@ -174,45 +306,62 @@ class Group30Agent(DefaultParty):
         progress = self.progress.get(time.time() * 1000)
 
         # Accept if opponent's offer is better than our next bid
-        # if self.score_bid(bid) > self.score_bid(next_bid):
-        #     return True
-
-        # Accept near deadline if it's a decent offer
-        if self.profile.getUtility(bid) > 0.75 and progress > 0.95:
+        if self.score_bid(bid) > self.score_bid(next_bid):
             return True
 
-        # Accept fallback if opponent is stubborn near deadline
+        # Accept near deadline if it's a decent offer
+        if self.profile.getUtility(bid) > 0.8 and progress > 0.95:
+            return True
+
+        # If time is nearly up and opponent has shown stubbornness, accept fallback
         if progress > 0.98 and self.opponent_stubborn and self.profile.getUtility(bid) > self.social_welfare_value:
             return True
 
-        if self.profile.getUtility(bid) > 0.90:
+        if progress > 0.99:
             return True
-
         return False
 
     def find_bid(self) -> Bid:
-        bids = [self.all_bids.get(randint(0, self.all_bids.size() - 1)) for _ in range(5000)]
+        bids = self.best_candidate_space
         progress = self.progress.get(time.time() * 1000)
         best_bid = None
-        best_score = -1.0
 
+        # Early stage: try to propose better and confident bids
         if progress < 0.3:
             if self.last_offered_bid is None:
+                # Try to aim above a starting reservation value
                 target = Decimal(0.75)
                 bids.sort(key=lambda b: abs(self.profile.getUtility(b) - target))
+                top_k = min(5, len(bids))
                 best_bid = bids[0]
             else:
-                bids.sort(key=lambda b: self.profile.getUtility(b))
+                # Find bids better than last offer
                 threshold = self.profile.getUtility(self.last_offered_bid)
                 filtered = [b for b in bids if self.profile.getUtility(b) >= threshold]
-                best_bid = max(filtered, key=self.score_bid) if filtered else self.last_offered_bid
+                if filtered:
+                    filtered.sort(key=self.score_bid, reverse=True)
+                    top_k = min(5, len(filtered))
+                    best_bid = bids[0]
+                else:
+                    best_bid = self.last_offered_bid
+
         elif progress < 0.98:
-            bids = [b for b in bids if self.profile.getUtility(b) >= self.profile.getUtility(self.last_offered_bid) * Decimal(0.9)]
-            bids.sort(key=lambda b: -self.opponent_model.get_predicted_utility(b))
-            best_bid = bids[0] if bids else self.last_offered_bid
+            # Middle phase: negotiate
+            threshold = self.profile.getUtility(self.last_offered_bid) * Decimal(0.9)
+            filtered = [b for b in bids if self.profile.getUtility(b) >= threshold]
+            if filtered:
+                filtered.sort(key=lambda b: -self.opponent_model.get_predicted_utility(b))
+                top_k = min(5, len(filtered))
+                best_bid = bids[0]
+            else:
+                best_bid = self.last_offered_bid
+
         else:
-            avg_opp_util = sum(Decimal(self.opponent_model.get_predicted_utility(b)) for b in self.received_bids) / len(self.received_bids)
+            # Near end: fallback if opponent is unwilling
+            avg_opp_util = sum(Decimal(self.opponent_model.get_predicted_utility(b)) for b in self.received_bids) / len(
+                self.received_bids)
             avg_my_util = sum(self.profile.getUtility(b) for b in self.received_bids) / len(self.received_bids)
+
             if avg_opp_util - avg_my_util > 0.4 or avg_my_util < self.reservation_value:
                 self.opponent_stubborn = True
                 return self.social_welfare_bid
@@ -255,7 +404,7 @@ class Group30Agent(DefaultParty):
 
         elif current_round == 2:
             # Round 2: Choose a bid that constitutes a moderate concession.
-            bids = [self.all_bids.get(randint(0, self.all_bids.size() - 1)) for _ in range(5000)]
+            bids = self.best_candidate_space
             candidates = [bid for bid in bids
                           if self.classify_self_move(self.recognition_h_bid_history[0], bid) == "concession"]
             if not candidates:
@@ -270,13 +419,13 @@ class Group30Agent(DefaultParty):
                 self.opponent_hypothesis = {"CC", "R", "TT"}
             if self.opponent_hypothesis == {"HH", "R"}:
                 # Choose bid with a large concession.
-                bids = [self.all_bids.get(randint(0, self.all_bids.size() - 1)) for _ in range(5000)]
+                bids = self.best_candidate_space
                 candidates = [bid for bid in bids
                               if self.classify_self_move(self.recognition_h_bid_history[-1], bid) == "large_concession"]
                 self.logger.log(logging.INFO, "Round 3 (Recognition): (Hypothesis HH,R) Selected bid with large concession.")
             else:
                 # Otherwise, choose a moderately selfish move.
-                bids = [self.all_bids.get(randint(0, self.all_bids.size() - 1)) for _ in range(5000)]
+                bids = self.best_candidate_space
                 candidates = [bid for bid in bids
                               if self.classify_self_move(self.recognition_h_bid_history[-1], bid) == "selfish"]
                 self.logger.log(logging.INFO, "Round 3 (Recognition): (Hypothesis CC,TT,R) Selected bid with moderate selfishness.")
@@ -284,9 +433,10 @@ class Group30Agent(DefaultParty):
                 candidates = [self.all_bids.get(randint(0, self.all_bids.size() - 1))]
             chosen = max(candidates, key=self.score_bid)
             return chosen
-        else:
+
+        elif current_round == 4:
             # Round 4: Choose a silent move.
-            candidates = [bid for bid in self.all_bids
+            candidates = [bid for bid in self.best_candidate_space
                           if self.classify_self_move(self.recognition_h_bid_history[-1], bid) == "silent"]
             if not candidates:
                 candidates = [self.all_bids.get(randint(0, self.all_bids.size() - 1))]
@@ -309,7 +459,7 @@ class Group30Agent(DefaultParty):
             self.logger.log(logging.INFO, "Recognition: Opponent move is " + move_type_opp)
             self.logger.log(logging.INFO, "Recognition: Opponent sigma is " + str(sigma_opp))
             self.logger.log(logging.INFO, "Recognition: Self sigma is " + str(sigma_self))
-            if abs(sigma_opp) <= abs(sigma_self) and move_type_opp in {"silent", "concession","small_concession","selfish"}:
+            if sigma_opp <= abs(sigma_self) and move_type_opp in {"silent", "concession","small_concession","selfish"}:
                 self.opponent_hypothesis = {"HH", "R"}
                 self.logger.log(logging.INFO, "Recognition: Hypothesis updated to {HH, R}.")
             elif sigma_opp >= sigma_self:
@@ -348,7 +498,7 @@ class Group30Agent(DefaultParty):
           - "large_concession" if utility decreases significantly.
           - "selfish" if utility increases beyond the threshold.
         """
-        diff = self.score_bid(new_bid) - self.score_bid(old_bid) # move step
+        diff = self.score_bid(new_bid) - self.score_bid(old_bid)
         if abs(diff) <= self.silent_move_delta:
             return "silent"
         if diff < 0:
@@ -374,26 +524,24 @@ class Group30Agent(DefaultParty):
           - Selfish move (for opponent) if σ_H(μ) < -δ.
         For small differences beyond δ, we return "small_concession" or "small_selfish" accordingly.
         """
-        dff  = self.score_bid(new_bid) - self.score_bid(old_bid)  # this is the perception
-        diff = self.opponent_model.get_predicted_utility(new_bid) - self.opponent_model.get_predicted_utility(old_bid)
+        diff = self.profile.getUtility(new_bid) - self.profile.getUtility(old_bid)
+        dff = self.opponent_model.get_predicted_utility(new_bid) - self.opponent_model.get_predicted_utility(old_bid)
         self.logger.log(logging.INFO, str(self.opponent_model.get_predicted_utility(new_bid)) + " " + str(self.opponent_model.get_predicted_utility(old_bid)) + " " + str(diff))
-        if abs(dff) <= self.silent_move_delta:
-            if diff > self.selfish_move_delta:
-                return "selfish"
-            else:
-                return "silent"
-        elif abs(dff) > self.concession_move_delta:
+        if abs(diff) <= self.silent_move_delta:
+            return "silent"
+        elif diff > self.concession_move_delta:
             # A sufficiently positive diff: opponent's bid is better for us → concession.
             return "concession"
-        elif diff > self.selfish_move_delta: # opponents side
-            # A sufficiently negative diff: opponent's bid is worse for us → selfish move.
-            return "selfish"
+        elif dff > 0:
+            if dff >= self.selfish_move_delta:
+                return "selfish"
         else:
             # For differences that are not strong enough, we return a "small" variant.
-            if diff > 0:
+            if diff >= 0:
                 return "small_concession"
             else:
-                return "small_selfish"
+                return "unknown"
+        return "unknown"
 
     def final_strategy_analysis(self):
         """
@@ -406,9 +554,9 @@ class Group30Agent(DefaultParty):
         if len(self.recognition_o_bid_history) < 3:
             self.logger.log(logging.INFO, "Final Analysis: Not enough opponent data for analysis.")
             return
-        move_type = self.classify_opponent_move(self.recognition_o_bid_history[2], self.recognition_o_bid_history[3])
-        self.logger.log(logging.INFO, "Recognized Strategy " + str(self.recognized_strategy))
-        self.logger.log(logging.INFO,"Recognized Opponent Move type " + str(move_type))
+        move_type = self.classify_opponent_move(self.recognition_o_bid_history[1], self.recognition_o_bid_history[2])
+        self.logger.log(logging.INFO, str(self.recognized_strategy))
+
         if self.recognized_strategy:
             self.logger.log(logging.INFO, "Final Analysis: Concluded opponent plays " + str(self.recognized_strategy) + ".")
             return
@@ -429,6 +577,3 @@ class Group30Agent(DefaultParty):
         else:
             self.logger.log(logging.INFO, "Final Analysis: No clear hypothesis; defaulting to Random (R).")
             self.recognized_strategy = "R"
-
-        self.opponent_recognized_strategy_array.append(self.recognized_strategy)
-        self.logger.log(logging.INFO,"OPPONENT RECOGNIZED STRATEGY " + str(self.opponent_recognized_strategy_array))
