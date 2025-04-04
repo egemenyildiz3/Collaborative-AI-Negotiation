@@ -132,12 +132,16 @@ def plot(data_dir: str, saveFig: bool, save_dir: str):
         #dict(x=0.8, y=0.99)
     )
 
-    # save if specified
+     # Save or show, prefer saving as png instead of html
     if saveFig:
         os.makedirs(save_dir, exist_ok=True)
         name = os.path.basename(os.path.normpath(data_dir))
-        #fig.write_image(os.path.join(save_dir, name + ".png"))
-        fig.write_html(os.path.join(save_dir, name + ".html"))
+        try:
+            fig.write_image(os.path.join(save_dir, name + ".png"))
+        except Exception as e:
+            fig.write_html(os.path.join(save_dir, name + ".html"))
+            print(f"the following error occurred while saving the plot as a png: \n {e} \n Saving as HTML instead")
+    
     fig.show()
 
 if __name__ == "__main__":
