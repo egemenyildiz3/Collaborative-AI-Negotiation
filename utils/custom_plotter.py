@@ -107,7 +107,6 @@ def plot(data_dir: str, saveFig: bool, save_dir: str):
     ))
 
     # Final bid
-    #agreedBid = all_utils[-1]
     if agreedBid is not None:
         fig.add_trace(go.Scatter(
             x=[agreedBid[0]], y=[agreedBid[1]],
@@ -131,17 +130,20 @@ def plot(data_dir: str, saveFig: bool, save_dir: str):
     else:
         # Change legend to reflect the negotiation not having achieved an agreement
         fig.add_trace(go.Scatter(
-            x=[], y=[],  
+            x=[0], y=[0],
             mode='markers',
+            marker=dict(size=10, color='purple', symbol='diamond', opacity=0),
             name='No agreed bid reached',
-            marker=dict(color='purple'),
-            visible='legendonly'
+            showlegend=True
         ))
+        
 
     fig.update_layout(
         title='Negotiation Bids with Pareto Front and Final Offer',
         xaxis_title='Utility: ' + agent_names[1],
         yaxis_title='Utility: ' +agent_names[0],
+        xaxis=dict(range=[0, 1]),
+        yaxis=dict(range=[0, 1]),
         legend= dict( # allign legend to the right of the graph
             x=1.02,  
             y=1,
