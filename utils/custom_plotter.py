@@ -47,6 +47,9 @@ def plot(data_dir: str, saveFig: bool, save_dir: str):
 
     bids_agent1 = []
     bids_agent2 = []
+    agreedBid = None
+    agreedBy = None
+
 
     #load all bids according to the agent performing it
     for act in actions:
@@ -59,6 +62,13 @@ def plot(data_dir: str, saveFig: bool, save_dir: str):
                     bids_agent1.append([u1, u2])
                 elif actor == agent_names[1]:
                     bids_agent2.append([u1, u2])
+        if "Accept" in act:
+            agreedBy = act["Accept"].get("actor")
+            utilities = act["Accept"].get("utilities", {})
+            if len(utilities) == 2:
+                agreedBid = list(utilities.values())
+
+            
 
     all_utils = np.array(bids_agent1 + bids_agent2)
     fig = go.Figure()
@@ -97,25 +107,36 @@ def plot(data_dir: str, saveFig: bool, save_dir: str):
     ))
 
     # Final bid
-    agreedBid = all_utils[-1]
-    fig.add_trace(go.Scatter(
-        x=[agreedBid[0]], y=[agreedBid[1]],
-        mode='markers',
-        marker=dict(size=10, color='purple', symbol='diamond'),
-        name='Final agreed upon bid'
-    ))
+    #agreedBid = all_utils[-1]
+    if agreedBid is not None:
+        fig.add_trace(go.Scatter(
+            x=[agreedBid[0]], y=[agreedBid[1]],
+            mode='markers',
+            marker=dict(size=10, color='purple', symbol='diamond'),
+            name='Final bid, agreed by: ' + str(agreedBy)
+        ))
 
-    # Dotted line to closest Pareto point
-    closestParetoPair = closestPoint(agreedBid, paretoPoints)
-    distance = dist(agreedBid, closestParetoPair)
-    fig.add_trace(go.Scatter(
-        x=[agreedBid[0], closestParetoPair[0]],
-        y=[agreedBid[1], closestParetoPair[1]],
-        mode='lines',
-        line=dict(dash='dot', color='grey'),
-        name='Distance to Pareto: ' + str(distance),
-        showlegend=True
-    ))
+        # Dotted line to closest Pareto point
+        closestParetoPair = closestPoint(agreedBid, paretoPoints)
+        distance = dist(agreedBid, closestParetoPair)
+        fig.add_trace(go.Scatter(
+            x=[agreedBid[0], closestParetoPair[0]],
+            y=[agreedBid[1], closestParetoPair[1]],
+            mode='lines',
+            line=dict(dash='dot', color='grey'),
+            name='Distance to Pareto: ' + str(distance),
+            showlegend=True
+        ))
+    
+    else:
+        # Change legend to reflect the negotiation not having achieved an agreement
+        fig.add_trace(go.Scatter(
+            x=[], y=[],  
+            mode='markers',
+            name='No agreed bid reached',
+            marker=dict(color='purple'),
+            visible='legendonly'
+        ))
 
     fig.update_layout(
         title='Negotiation Bids with Pareto Front and Final Offer',
