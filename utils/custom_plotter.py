@@ -32,7 +32,8 @@ def findParetoFront(points):
 def closestPoint(point, point_list):
     return min(point_list, key=lambda p: dist(point, p))
 
-def plot(data_dir: str, saveFig: bool, save_dir: str = "plots"):
+    # main method for plotting all the bids found in a json file
+def plot(data_dir: str, saveFig: bool, save_dir: str):
     session_path = os.path.join(data_dir, 'session_results_trace.json')
     session_data = load_json(session_path)
 
@@ -62,6 +63,7 @@ def plot(data_dir: str, saveFig: bool, save_dir: str = "plots"):
     all_utils = np.array(bids_agent1 + bids_agent2)
     fig = go.Figure()
 
+    # plots the bids offered by the 2 agents
     agent1_utils = np.array(bids_agent1)
     fig.add_trace(go.Scatter(
         x=agent1_utils[:, 0],
@@ -130,7 +132,7 @@ def plot(data_dir: str, saveFig: bool, save_dir: str = "plots"):
         #dict(x=0.8, y=0.99)
     )
 
-    # Save or show
+    # save if specified
     if saveFig:
         os.makedirs(save_dir, exist_ok=True)
         name = os.path.basename(os.path.normpath(data_dir))
