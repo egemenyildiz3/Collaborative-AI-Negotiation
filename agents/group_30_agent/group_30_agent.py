@@ -345,7 +345,7 @@ class Group30Agent(DefaultParty):
                 else:
                     best_bid = self.last_offered_bid
 
-        elif progress < 0.98:
+        elif progress < 0.97:
             # Middle phase: negotiate
             threshold = self.profile.getUtility(self.last_offered_bid) * Decimal(0.9)
             filtered = [b for b in bids if self.profile.getUtility(b) >= threshold]
@@ -355,7 +355,8 @@ class Group30Agent(DefaultParty):
                 best_bid = bids[0]
             else:
                 best_bid = self.last_offered_bid
-
+        elif progress > 0.99:
+            return self.issue_level_concede(self.last_offered_bid, self.last_received_bid)
         else:
             # Near end: fallback if opponent is unwilling
             avg_opp_util = sum(Decimal(self.opponent_model.get_predicted_utility(b)) for b in self.received_bids) / len(
