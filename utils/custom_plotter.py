@@ -1,3 +1,4 @@
+from collections import Counter
 import json
 from math import sqrt
 import os
@@ -47,6 +48,7 @@ def plot(data_dir: str, saveFig: bool, save_dir: str):
 
     bids_agent1 = []
     bids_agent2 = []
+    all_bids = []
     agreedBid = None
     agreedBy = None
 
@@ -58,6 +60,7 @@ def plot(data_dir: str, saveFig: bool, save_dir: str):
             utilities = act["Offer"].get("utilities", {})
             if len(utilities) == 2:
                 u1, u2 = list(utilities.values())
+                all_bids.append([u1, u2])
                 if actor == agent_names[0]:
                     bids_agent1.append([u1, u2])
                 elif actor == agent_names[1]:
@@ -70,25 +73,27 @@ def plot(data_dir: str, saveFig: bool, save_dir: str):
 
             
 
-    all_utils = np.array(bids_agent1 + bids_agent2)
+    all_utils = np.array(all_bids)
     fig = go.Figure()
 
     # plots the bids offered by the 2 agents
     agent1_utils = np.array(bids_agent1)
+    #print(len(np.unique(agent1_utils)))
     fig.add_trace(go.Scatter(
         x=agent1_utils[:, 0],
         y=agent1_utils[:, 1],
         mode='markers',
-        marker=dict(size=6, color='blue', opacity=0.5),
+        marker=dict(size=7, color='blue', opacity=0.8),
         name=f'{agent_names[0]} Bids'
     ))
 
     agent2_utils = np.array(bids_agent2)
+    #print(len(np.unique(agent2_utils)))
     fig.add_trace(go.Scatter(
         x=agent2_utils[:, 0],
         y=agent2_utils[:, 1],
         mode='markers',
-        marker=dict(size=6, color='green', opacity=0.5),
+        marker=dict(size=7, color='red', opacity=0.8),
         name=f'{agent_names[1]} Bids'
     ))
 
@@ -99,10 +104,8 @@ def plot(data_dir: str, saveFig: bool, save_dir: str):
 
     fig.add_trace(go.Scatter(
         x=paretoPoints[:, 0], y=paretoPoints[:, 1],
-        mode='lines+markers',
-        marker=dict(size=8, color='red'),
-        line=dict(width=2, color='red'),
-        
+        mode='lines',
+        line=dict(width=1, color='purple'),
         name='Pareto Front'
     ))
 
