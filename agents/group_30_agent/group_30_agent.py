@@ -577,3 +577,46 @@ class Group30Agent(DefaultParty):
         else:
             self.logger.log(logging.INFO, "Final Analysis: No clear hypothesis; defaulting to Random (R).")
             self.recognized_strategy = "R"
+    
+
+    def issue_level_concede(self, bid: Bid, last_received_bid: Bid) -> Bid:
+        """
+        Performs a concession by modifying the current bid on one issue that is
+        more valued by the opponent than to us. This helps find mutual gain without losing
+        too much utility. Used for adaptive concession in strategic settings.
+        """
+        # Clone current and opponent's last bid issue values
+        own_values = copy.deepcopy(bid.getIssueValues())
+        opp_values = copy.deepcopy(last_received_bid.getIssueValues())
+        
+        # Sort own and opponent issue weights
+        own_sorted = sorted(self.profile.getWeights().items(), key=lambda x: x[1], reverse=True)
+        if self.frequency_model is None:
+            return bid  # fallback if opponent model not ready
+
+        opp_weight_estimates = self.frequency_model.getEstimatedWeights()
+        opp_sorted = sorted(opp_weight_estimates.items(), key=lambda x: x[1], reverse=True)
+
+        # Loop over issues and find one to concede if opponent cares more
+        for issue, _ in own_sorted:
+            # Skip if values already match (shared preference)
+            if own_values[issue] == opp_values.get(issue):
+                continue
+
+            # Determine if opponent values this issue more than us
+            own_index = [i for i, (iss, _) in enumerate(own_sorted) if iss == issue][0]
+            opp_index = [i for i, (iss, _) in enumerate(opp_sorted) if iss == issue][0]
+            if opp_index < own_index:
+                # Simulate changing our bid on this issue
+                temp_values = copy.deepcopy(own_values)
+                temp_values[issue] = opp_values[issue]
+                new_bid = Bid(temp_values)
+
+                # Accept only if utility drop is small
+                old_score = self.score_bid(bid)
+                new_score = self.score_bid(new_bid)
+
+                if (old_score - new_score) <= 0.03:
+                    return new_bid  # concede this issue
+
+        return bid  # return unchanged if no acceptable concession found
