@@ -22,7 +22,7 @@ settings = {
             "parameters": {"storage_dir": "agent_storage/RandomAgent"},
         },
         {
-            "class": "agents.group_30_agent.group_30_agent.Group30Agent",
+            "class": "agents.group30_agent.group30_agent.Group30Agent",
             "parameters": {"storage_dir": "agent_storage/Group30Agent"},
         },
     ],
